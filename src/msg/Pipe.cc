@@ -221,7 +221,11 @@ void *Pipe::DelayedDelivery::entry()
     }
     lgeneric_subdout(pipe->msgr->cct, ms, 10) << pipe->_pipe_prefix(_dout) << "DelayedDelivery::entry dequeuing message " << m << " for delivery, past " << release << dendl;
     delay_queue.pop_front();
-    pipe->in_q->enqueue(m, m->get_priority(), pipe->conn_id);
+    if (pipe->in_q->can_fast_dispatch(m)) {
+      pipe->in_q->fast_dispatch(m);
+    } else {
+      pipe->in_q->enqueue(m, m->get_priority(), pipe->conn_id);
+    }
   }
   lgeneric_subdout(pipe->msgr->cct, ms, 20) << pipe->_pipe_prefix(_dout) << "DelayedDelivery::entry stop" << dendl;
   return NULL;
@@ -1485,17 +1489,23 @@ void Pipe::reader()
 	       << dendl;
 
       if (delay_thread) {
-	utime_t release;
-	if (rand() % 10000 < msgr->cct->_conf->ms_inject_delay_probability * 10000.0) {
-	  release = m->get_recv_stamp();
-	  release += msgr->cct->_conf->ms_inject_delay_max * (double)(rand() % 10000) / 10000.0;
-	  lsubdout(msgr->cct, ms, 1) << "queue_received will delay until " << release << " on " << m << " " << *m << dendl;
-	}
-	delay_thread->queue(release, m);
+        utime_t release;
+        if (rand() % 10000 < msgr->cct->_conf->ms_inject_delay_probability * 10000.0) {
+          release = m->get_recv_stamp();
+          release += msgr->cct->_conf->ms_inject_delay_max * (double)(rand() % 10000) / 10000.0;
+          lsubdout(msgr->cct, ms, 1) << "queue_received will delay until " << release << " on " << m << " " << *m << dendl;
+        }
+        delay_thread->queue(release, m);
       } else {
-	in_q->enqueue(m, m->get_priority(), conn_id);
+        if (in_q->can_fast_dispatch(m)) {
+          pipe_lock.Unlock();
+          in_q->fast_dispatch(m);
+          pipe_lock.Lock();
+        } else {
+          in_q->enqueue(m, m->get_priority(), conn_id);
+        }
       }
-    } 
+    }
     
     else if (tag == CEPH_MSGR_TAG_CLOSE) {
       ldout(msgr->cct,20) << "reader got CLOSE" << dendl;

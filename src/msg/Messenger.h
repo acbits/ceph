@@ -39,6 +39,7 @@ class Timer;
 class Messenger {
 private:
   list<Dispatcher*> dispatchers;
+  list <Dispatcher*> fast_dispatchers;
 
 protected:
   /// the "name" of the local daemon. eg client.99
@@ -301,6 +302,8 @@ public:
   void add_dispatcher_head(Dispatcher *d) { 
     bool first = dispatchers.empty();
     dispatchers.push_front(d);
+    if (d->ms_can_fast_dispatch_any())
+      fast_dispatchers.push_front(d);
     if (first)
       ready();
   }
@@ -314,6 +317,8 @@ public:
   void add_dispatcher_tail(Dispatcher *d) { 
     bool first = dispatchers.empty();
     dispatchers.push_back(d);
+    if (d->ms_can_fast_dispatch_any())
+      fast_dispatchers.push_back(d);
     if (first)
       ready();
   }
@@ -571,6 +576,40 @@ protected:
    * @{
    */
 public:
+  /**
+   * Determine whether a message can be fast-dispatched. We will
+   * query each Dispatcher in sequence to determine if they are
+   * capable of handling a particular message via "fast dispatch".
+   *
+   * @param m The Message we are testing.
+   */
+  bool ms_can_fast_dispatch(Message *m) {
+    for (list<Dispatcher*>::iterator p = fast_dispatchers.begin();
+	 p != fast_dispatchers.end();
+	 ++p) {
+      if ((*p)->ms_can_fast_dispatch(m))
+	return true;
+    }
+    return false;
+  }
+
+  /**
+   * Deliver a single Message via "fast dispatch".
+   *
+   * @param m The Message we are fast dispatching. We take ownership
+   * of one reference to it.
+   */
+  void ms_fast_dispatch(Message *m) {
+    for (list<Dispatcher*>::iterator p = fast_dispatchers.begin();
+	 p != fast_dispatchers.end();
+	 ++p) {
+      if ((*p)->ms_can_fast_dispatch(m)) {
+	(*p)->ms_fast_dispatch(m);
+	return;
+      }
+    }
+    assert(0);
+  }
   /**
    *  Deliver a single Message. Send it to each Dispatcher
    *  in sequence until one of them handles it.
