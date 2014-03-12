@@ -510,7 +510,7 @@ bool Locker::acquire_locks(MDRequestRef& mdr,
 }
 
 
-void Locker::set_xlocks_done(MutationRef& mut, bool skip_dentry)
+void Locker::set_xlocks_done(MutationRef mut, bool skip_dentry)
 {
   for (set<SimpleLock*>::iterator p = mut->xlocks.begin();
        p != mut->xlocks.end();
@@ -581,7 +581,7 @@ void Locker::_drop_non_rdlocks(MutationRef& mut, set<CInode*> *pneed_issue)
   }
 }
 
-void Locker::cancel_locking(MutationRef& mut, set<CInode*> *pneed_issue)
+void Locker::cancel_locking(MutationRef mut, set<CInode*> *pneed_issue)
 {
   SimpleLock *lock = mut->locking;
   assert(lock);
@@ -602,7 +602,7 @@ void Locker::cancel_locking(MutationRef& mut, set<CInode*> *pneed_issue)
   mut->finish_locking(lock);
 }
 
-void Locker::drop_locks(MutationRef& mut, set<CInode*> *pneed_issue)
+void Locker::drop_locks(MutationRef mut, set<CInode*> *pneed_issue)
 {
   // leftover locks
   set<CInode*> my_need_issue;
@@ -619,7 +619,7 @@ void Locker::drop_locks(MutationRef& mut, set<CInode*> *pneed_issue)
   mut->done_locking = false;
 }
 
-void Locker::drop_non_rdlocks(MutationRef& mut, set<CInode*> *pneed_issue)
+void Locker::drop_non_rdlocks(MutationRef mut, set<CInode*> *pneed_issue)
 {
   set<CInode*> my_need_issue;
   if (!pneed_issue)
@@ -631,7 +631,7 @@ void Locker::drop_non_rdlocks(MutationRef& mut, set<CInode*> *pneed_issue)
     issue_caps_set(*pneed_issue);
 }
 
-void Locker::drop_rdlocks(MutationRef& mut, set<CInode*> *pneed_issue)
+void Locker::drop_rdlocks(MutationRef mut, set<CInode*> *pneed_issue)
 {
   set<CInode*> my_need_issue;
   if (!pneed_issue)
@@ -1218,7 +1218,7 @@ void Locker::nudge_log(SimpleLock *lock)
     mds->mdlog->flush();
 }
 
-void Locker::rdlock_finish(SimpleLock *lock, MutationRef& mut, bool *pneed_issue)
+void Locker::rdlock_finish(SimpleLock *lock, MutationRef mut, bool *pneed_issue)
 {
   // drop ref
   lock->put_rdlock();
@@ -1351,7 +1351,7 @@ bool Locker::wrlock_start(SimpleLock *lock, MDRequestRef& mut, bool nowait)
   return false;
 }
 
-void Locker::wrlock_finish(SimpleLock *lock, MutationRef& mut, bool *pneed_issue)
+void Locker::wrlock_finish(SimpleLock *lock, MutationRef mut, bool *pneed_issue)
 {
   if (lock->get_type() == CEPH_LOCK_IVERSION ||
       lock->get_type() == CEPH_LOCK_DVERSION)
@@ -1402,7 +1402,7 @@ void Locker::remote_wrlock_start(SimpleLock *lock, int target, MDRequestRef& mut
 }
 
 void Locker::remote_wrlock_finish(SimpleLock *lock, int target,
-                                  MutationRef& mut)
+                                  MutationRef mut)
 {
   // drop ref
   mut->remote_wrlocks.erase(lock);
@@ -1523,7 +1523,7 @@ void Locker::_finish_xlock(SimpleLock *lock, client_t xlocker, bool *pneed_issue
   eval_gather(lock, true, pneed_issue);
 }
 
-void Locker::xlock_finish(SimpleLock *lock, MutationRef& mut, bool *pneed_issue)
+void Locker::xlock_finish(SimpleLock *lock, MutationRef mut, bool *pneed_issue)
 {
   if (lock->get_type() == CEPH_LOCK_IVERSION ||
       lock->get_type() == CEPH_LOCK_DVERSION)
@@ -1578,7 +1578,7 @@ void Locker::xlock_finish(SimpleLock *lock, MutationRef& mut, bool *pneed_issue)
   }
 }
 
-void Locker::xlock_export(SimpleLock *lock, MutationRef& mut)
+void Locker::xlock_export(SimpleLock *lock, MutationRef mut)
 {
   dout(10) << "xlock_export on " << *lock << " " << *lock->get_parent() << dendl;
 
@@ -1595,7 +1595,7 @@ void Locker::xlock_export(SimpleLock *lock, MutationRef& mut)
   lock->set_state(LOCK_LOCK);
 }
 
-void Locker::xlock_import(SimpleLock *lock, MutationRef& mut)
+void Locker::xlock_import(SimpleLock *lock, MutationRef mut)
 {
   dout(10) << "xlock_import on " << *lock << " " << *lock->get_parent() << dendl;
   lock->get_parent()->auth_pin(lock);
