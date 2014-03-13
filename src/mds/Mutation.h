@@ -317,6 +317,7 @@ struct MDRequestImpl : public MutationImpl {
   void set_self_ref(ceph::shared_ptr<MDRequestImpl>& ref) {
     self_ref = ceph::static_pointer_cast<MutationImpl,MDRequestImpl>(ref);
   }
+  typedef ceph::shared_ptr<MDRequestImpl> Ref;
 };
 
 typedef ceph::shared_ptr<MDRequestImpl> MDRequestRef;
