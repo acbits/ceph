@@ -1484,7 +1484,7 @@ CInode *MDCache::cow_inode(CInode *in, snapid_t last)
   return oldin;
 }
 
-void MDCache::journal_cow_dentry(MutationRef& mut, EMetaBlob *metablob,
+void MDCache::journal_cow_dentry(MutationRef mut, EMetaBlob *metablob,
                                  CDentry *dn, snapid_t follows,
 				 CInode **pcow_inode, CDentry::linkage_t *dnl)
 {
@@ -1577,7 +1577,7 @@ void MDCache::journal_cow_inode(MutationRef& mut, EMetaBlob *metablob,
   journal_cow_dentry(mut, metablob, dn, follows, pcow_inode);
 }
 
-void MDCache::journal_dirty_inode(MutationRef& mut, EMetaBlob *metablob, CInode *in, snapid_t follows)
+void MDCache::journal_dirty_inode(MutationRef mut, EMetaBlob *metablob, CInode *in, snapid_t follows)
 {
   if (in->is_base()) {
     metablob->add_root(true, in, in->get_projected_inode());
@@ -1848,7 +1848,7 @@ void MDCache::project_rstat_frag_to_inode(nest_info_t& rstat, nest_info_t& accou
  * accounted_rstat on scatterlock sync may not match our current
  * rstat.  this is normal and expected.
  */
-void MDCache::predirty_journal_parents(MutationRef& mut, EMetaBlob *blob,
+void MDCache::predirty_journal_parents(MutationRef mut, EMetaBlob *blob,
 				       CInode *in, CDir *parent,
 				       int flags, int linkunlink,
 				       snapid_t cfollows)
