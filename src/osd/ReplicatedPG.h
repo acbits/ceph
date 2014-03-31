@@ -329,6 +329,9 @@ public:
   const pg_info_t &get_info() const {
     return info;
   }
+  const pg_pool_t &get_pool() const {
+    return pool.info;
+  }
   ObjectContextRef get_obc(
     const hobject_t &hoid,
     map<string, bufferlist> &attrs) {
@@ -1316,7 +1319,7 @@ private:
 
   int _verify_no_head_clones(const hobject_t& soid,
 			     const SnapSet& ss);
-  int _delete_head(OpContext *ctx, bool no_whiteout);
+  int _delete_oid(OpContext *ctx, bool no_whiteout);
   int _rollback_to(OpContext *ctx, ceph_osd_op& op);
 public:
   bool same_for_read_since(epoch_t e);

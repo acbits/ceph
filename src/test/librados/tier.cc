@@ -189,6 +189,9 @@ TEST_F(LibRadosTwoPoolsPP, Overlay) {
     "{\"prefix\": \"osd tier remove\", \"pool\": \"" + pool_name +
     "\", \"tierpool\": \"" + cache_pool_name + "\"}",
     inbl, NULL, NULL));
+
+  // wait for maps to settle before next test
+  cluster.wait_for_latest_osdmap();
 }
 
 TEST_F(LibRadosTwoPoolsPP, Promote) {
@@ -253,6 +256,9 @@ TEST_F(LibRadosTwoPoolsPP, Promote) {
     "{\"prefix\": \"osd tier remove\", \"pool\": \"" + pool_name +
     "\", \"tierpool\": \"" + cache_pool_name + "\"}",
     inbl, NULL, NULL));
+
+  // wait for maps to settle before next test
+  cluster.wait_for_latest_osdmap();
 }
 
 TEST_F(LibRadosTwoPoolsPP, PromoteSnap) {
@@ -403,7 +409,120 @@ TEST_F(LibRadosTwoPoolsPP, PromoteSnap) {
     "{\"prefix\": \"osd tier remove\", \"pool\": \"" + pool_name +
     "\", \"tierpool\": \"" + cache_pool_name + "\"}",
     inbl, NULL, NULL));
+
+  // wait for maps to settle before next test
+  cluster.wait_for_latest_osdmap();
 }
+
+TEST_F(LibRadosTwoPoolsPP, PromoteSnapScrub) {
+  int num = 100;
+
+  // create objects
+  for (int i=0; i<num; ++i) {
+    bufferlist bl;
+    bl.append("hi there");
+    ObjectWriteOperation op;
+    op.write_full(bl);
+    ASSERT_EQ(0, ioctx.operate(string("foo") + stringify(i), &op));
+  }
+
+  vector<uint64_t> my_snaps;
+  for (int snap=0; snap<4; ++snap) {
+    // create a snapshot, clone
+    vector<uint64_t> ns(1);
+    ns.insert(ns.end(), my_snaps.begin(), my_snaps.end());
+    my_snaps.swap(ns);
+    ASSERT_EQ(0, ioctx.selfmanaged_snap_create(&my_snaps[0]));
+    cout << "my_snaps " << my_snaps << std::endl;
+    ASSERT_EQ(0, ioctx.selfmanaged_snap_set_write_ctx(my_snaps[0],
+						      my_snaps));
+    for (int i=0; i<num; ++i) {
+      bufferlist bl;
+      bl.append(string("ciao! snap") + stringify(snap));
+      ObjectWriteOperation op;
+      op.write_full(bl);
+      ASSERT_EQ(0, ioctx.operate(string("foo") + stringify(i), &op));
+    }
+  }
+
+  // configure cache
+  bufferlist inbl;
+  ASSERT_EQ(0, cluster.mon_command(
+    "{\"prefix\": \"osd tier add\", \"pool\": \"" + pool_name +
+    "\", \"tierpool\": \"" + cache_pool_name +
+    "\", \"force_nonempty\": \"--force-nonempty\" }",
+    inbl, NULL, NULL));
+  ASSERT_EQ(0, cluster.mon_command(
+    "{\"prefix\": \"osd tier set-overlay\", \"pool\": \"" + pool_name +
+    "\", \"overlaypool\": \"" + cache_pool_name + "\"}",
+    inbl, NULL, NULL));
+  ASSERT_EQ(0, cluster.mon_command(
+    "{\"prefix\": \"osd tier cache-mode\", \"pool\": \"" + cache_pool_name +
+    "\", \"mode\": \"writeback\"}",
+    inbl, NULL, NULL));
+
+  // wait for maps to settle
+  cluster.wait_for_latest_osdmap();
+
+  // read, trigger a promote on _some_ heads to make sure we handle cases
+  // where snaps are present and where they are not.
+  cout << "promoting some heads" << std::endl;
+  for (int i=0; i<num; ++i) {
+    if (i % 5 == 0 || i > num - 3) {
+      bufferlist bl;
+      ASSERT_EQ(1, ioctx.read(string("foo") + stringify(i), bl, 1, 0));
+      ASSERT_EQ('c', bl[0]);
+    }
+  }
+
+  for (unsigned snap = 0; snap < my_snaps.size(); ++snap) {
+    cout << "promoting from clones for snap " << my_snaps[snap] << std::endl;
+    ioctx.snap_set_read(my_snaps[snap]);
+
+    // read some snaps, semi-randomly
+    for (int i=0; i<50; ++i) {
+      bufferlist bl;
+      string o = string("foo") + stringify((snap * i * 137) % 80);
+      //cout << o << std::endl;
+      ASSERT_EQ(1, ioctx.read(o, bl, 1, 0));
+    }
+  }
+
+  // ok, stop and scrub this pool (to make sure scrub can handle
+  // missing clones in the cache tier).
+  {
+    IoCtx cache_ioctx;
+    ASSERT_EQ(0, cluster.ioctx_create(cache_pool_name.c_str(), cache_ioctx));
+    for (int i=0; i<10; ++i) {
+      ostringstream ss;
+      ss << "{\"prefix\": \"pg scrub\", \"pgid\": \""
+	 << cache_ioctx.get_id() << "." << i
+	 << "\"}";
+      cluster.mon_command(ss.str(), inbl, NULL, NULL);
+    }
+
+    // give it a few seconds to go.  this is sloppy but is usually enough time
+    cout << "waiting for scrubs..." << std::endl;
+    sleep(30);
+    cout << "done waiting" << std::endl;
+  }
+
+  ioctx.snap_set_read(librados::SNAP_HEAD);
+
+  // tear down tiers
+  ASSERT_EQ(0, cluster.mon_command(
+    "{\"prefix\": \"osd tier remove-overlay\", \"pool\": \"" + pool_name +
+    "\"}",
+    inbl, NULL, NULL));
+  ASSERT_EQ(0, cluster.mon_command(
+    "{\"prefix\": \"osd tier remove\", \"pool\": \"" + pool_name +
+    "\", \"tierpool\": \"" + cache_pool_name + "\"}",
+    inbl, NULL, NULL));
+
+  // wait for maps to settle before next test
+  cluster.wait_for_latest_osdmap();
+}
+
 
 TEST_F(LibRadosTwoPoolsPP, PromoteSnapTrimRace) {
   // create object
@@ -467,6 +586,9 @@ TEST_F(LibRadosTwoPoolsPP, PromoteSnapTrimRace) {
     "{\"prefix\": \"osd tier remove\", \"pool\": \"" + pool_name +
     "\", \"tierpool\": \"" + cache_pool_name + "\"}",
     inbl, NULL, NULL));
+
+  // wait for maps to settle before next test
+  cluster.wait_for_latest_osdmap();
 }
 
 TEST_F(LibRadosTwoPoolsPP, Whiteout) {
@@ -540,6 +662,9 @@ TEST_F(LibRadosTwoPoolsPP, Whiteout) {
     "{\"prefix\": \"osd tier remove\", \"pool\": \"" + pool_name +
     "\", \"tierpool\": \"" + cache_pool_name + "\"}",
     inbl, NULL, NULL));
+
+  // wait for maps to settle before next test
+  cluster.wait_for_latest_osdmap();
 }
 
 TEST_F(LibRadosTwoPoolsPP, Evict) {
@@ -640,6 +765,9 @@ TEST_F(LibRadosTwoPoolsPP, Evict) {
     "{\"prefix\": \"osd tier remove\", \"pool\": \"" + pool_name +
     "\", \"tierpool\": \"" + cache_pool_name + "\"}",
     inbl, NULL, NULL));
+
+  // wait for maps to settle before next test
+  cluster.wait_for_latest_osdmap();
 }
 
 TEST_F(LibRadosTwoPoolsPP, EvictSnap) {
@@ -885,6 +1013,9 @@ TEST_F(LibRadosTwoPoolsPP, EvictSnap) {
     "{\"prefix\": \"osd tier remove\", \"pool\": \"" + pool_name +
     "\", \"tierpool\": \"" + cache_pool_name + "\"}",
     inbl, NULL, NULL));
+
+  // wait for maps to settle before next test
+  cluster.wait_for_latest_osdmap();
 }
 
 TEST_F(LibRadosTwoPoolsPP, TryFlush) {
@@ -1003,6 +1134,9 @@ TEST_F(LibRadosTwoPoolsPP, TryFlush) {
     "{\"prefix\": \"osd tier remove\", \"pool\": \"" + pool_name +
     "\", \"tierpool\": \"" + cache_pool_name + "\"}",
     inbl, NULL, NULL));
+
+  // wait for maps to settle before next test
+  cluster.wait_for_latest_osdmap();
 }
 
 TEST_F(LibRadosTwoPoolsPP, Flush) {
@@ -1173,6 +1307,9 @@ TEST_F(LibRadosTwoPoolsPP, Flush) {
     "{\"prefix\": \"osd tier remove\", \"pool\": \"" + pool_name +
     "\", \"tierpool\": \"" + cache_pool_name + "\"}",
     inbl, NULL, NULL));
+
+  // wait for maps to settle before next test
+  cluster.wait_for_latest_osdmap();
 }
 
 TEST_F(LibRadosTwoPoolsPP, FlushSnap) {
@@ -1476,6 +1613,9 @@ TEST_F(LibRadosTierPP, FlushWriteRaces) {
     "{\"prefix\": \"osd tier remove\", \"pool\": \"" + pool_name +
     "\", \"tierpool\": \"" + cache_pool_name + "\"}",
     inbl, NULL, NULL));
+
+  // wait for maps to settle before next test
+  cluster.wait_for_latest_osdmap();
 }
 
 TEST_F(LibRadosTwoPoolsPP, FlushTryFlushRaces) {
@@ -1652,6 +1792,9 @@ TEST_F(LibRadosTwoPoolsPP, FlushTryFlushRaces) {
     "{\"prefix\": \"osd tier remove\", \"pool\": \"" + pool_name +
     "\", \"tierpool\": \"" + cache_pool_name + "\"}",
     inbl, NULL, NULL));
+
+  // wait for maps to settle before next test
+  cluster.wait_for_latest_osdmap();
 }
 
 
@@ -1758,6 +1901,9 @@ TEST_F(LibRadosTwoPoolsPP, TryFlushReadRace) {
     "{\"prefix\": \"osd tier remove\", \"pool\": \"" + pool_name +
     "\", \"tierpool\": \"" + cache_pool_name + "\"}",
     inbl, NULL, NULL));
+
+  // wait for maps to settle before next test
+  cluster.wait_for_latest_osdmap();
 }
 
 TEST_F(LibRadosTierPP, HitSetNone) {
