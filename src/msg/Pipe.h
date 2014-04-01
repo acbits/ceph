@@ -179,7 +179,8 @@ class DispatchQueue;
 
     int randomize_out_seq();
 
-    int read_message(Message **pm);
+    int read_message(Message **pm,
+		     AuthSessionHandler *session_security_copy);
     int write_message(ceph_msg_header& h, ceph_msg_footer& f, bufferlist& body);
     /**
      * Write the given data (of length len) to the Pipe's socket. This function

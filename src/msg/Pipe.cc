@@ -17,6 +17,7 @@
 #include <sys/uio.h>
 #include <limits.h>
 #include <poll.h>
+#include <boost/scoped_ptr.hpp>
 
 #include "Message.h"
 #include "Pipe.h"
@@ -1362,6 +1363,14 @@ void Pipe::reader()
       continue;
     }
 
+    boost::scoped_ptr<AuthSessionHandler> maybe_session_security;
+    if (session_security) {
+      maybe_session_security.reset(get_auth_session_handler(msgr->cct,
+				       session_security->get_protocol(),
+				       session_security->get_key(),
+				       connection_state->get_features()));
+    }
+
     pipe_lock.Unlock();
 
     char buf[80];
@@ -1398,7 +1407,7 @@ void Pipe::reader()
     else if (tag == CEPH_MSGR_TAG_MSG) {
       ldout(msgr->cct,20) << "reader got MSG" << dendl;
       Message *m = 0;
-      int r = read_message(&m);
+      int r = read_message(&m, maybe_session_security.get());
 
       pipe_lock.Lock();
       
@@ -1673,7 +1682,8 @@ static void alloc_aligned_buffer(bufferlist& data, unsigned len, unsigned off)
   }
 }
 
-int Pipe::read_message(Message **pm)
+int Pipe::read_message(Message **pm,
+		       AuthSessionHandler* session_security_copy)
 {
   int ret = -1;
   // envelope
@@ -1861,10 +1871,10 @@ int Pipe::read_message(Message **pm)
   //  Check the signature if one should be present.  A zero return indicates success. PLR
   //
 
-  if (session_security == NULL) {
+  if (session_security_copy == NULL) {
     ldout(msgr->cct, 10) << "No session security set" << dendl;
   } else {
-    if (session_security->check_message_signature(message)) {
+    if (session_security_copy->check_message_signature(message)) {
       ldout(msgr->cct, 0) << "Signature check failed" << dendl;
       ret = -EINVAL;
       goto out_dethrottle;
