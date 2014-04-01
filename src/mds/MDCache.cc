@@ -4488,7 +4488,7 @@ void MDCache::handle_cache_rejoin_strong(MMDSCacheRejoin *strong)
 	  if (have_request(r->reqid))
 	    mdr = request_get(r->reqid);
 	  else
-	    mdr = request_start_slave(r->reqid, r->attempt, from);
+	    mdr = request_start_slave(r->reqid, r->attempt, strong);
 	  mdr->auth_pin(dn);
 	}
       }
@@ -4583,7 +4583,7 @@ void MDCache::handle_cache_rejoin_strong(MMDSCacheRejoin *strong)
 	if (have_request(r->reqid))
 	  mdr = request_get(r->reqid);
 	else
-	  mdr = request_start_slave(r->reqid, r->attempt, from);
+	  mdr = request_start_slave(r->reqid, r->attempt, strong);
 	if (strong->frozen_authpin_inodes.count(in->vino())) {
 	  assert(!in->get_num_auth_pins());
 	  mdr->freeze_auth_pin(in);
@@ -8879,8 +8879,9 @@ MDRequestRef MDCache::request_start(MClientRequest *req)
   return mdr;
 }
 
-MDRequestRef MDCache::request_start_slave(metareqid_t ri, __u32 attempt, int by)
+MDRequestRef MDCache::request_start_slave(metareqid_t ri, __u32 attempt, Message *m)
 {
+  int by = static_cast<int>(m->get_source().num());
   MDRequestRef mdr(new MDRequestImpl(ri, attempt, by));
   mdr->set_self_ref(mdr);
   assert(active_requests.count(mdr->reqid) == 0);
