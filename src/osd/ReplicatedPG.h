@@ -864,6 +864,7 @@ protected:
   int find_object_context(const hobject_t& oid,
 			  ObjectContextRef *pobc,
 			  bool can_create,
+			  bool ignore_missing_snap=false,
 			  hobject_t *missing_oid=NULL);
 
   void add_object_context_to_pg_stat(ObjectContextRef obc, pg_stat_t *stat);

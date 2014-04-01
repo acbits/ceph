@@ -46,6 +46,7 @@ const char *ceph_osd_flag_name(unsigned flag)
   case CEPH_OSD_FLAG_SKIPRWLOCKS: return "skiprwlocks";
   case CEPH_OSD_FLAG_IGNORE_OVERLAY: return "ignore_overlay";
   case CEPH_OSD_FLAG_FLUSH: return "flush";
+  case CEPH_OSD_FLAG_IGNORE_RMED_SNAP: return "ignore_removed_snap";
   default: return "???";
   }
 }
@@ -3337,6 +3338,24 @@ void OSDSuperblock::generate_test_instances(list<OSDSuperblock*>& o)
 }
 
 // -- SnapSet --
+
+
+void SnapSet::snaps_for_clone(
+  const pg_pool_t &info,
+  snapid_t clone, vector<snapid_t> *out /* ascending */) const
+{
+  assert(out);
+  vector<snapid_t>::const_iterator i =
+    std::find(clones.begin(), clones.end(), clone);
+  assert(i != clones.end());
+  snapid_t prev = (i == clones.begin()) ? snapid_t(0) : *(--i);
+  for (vector<snapid_t>::const_reverse_iterator s = snaps.rbegin();
+       s != snaps.rend();
+       ++s) {
+    if (prev < *s && clone >= *s && !info.is_removed_snap(*s))
+      out->push_back(*s);
+  }
+}
 
 void SnapSet::encode(bufferlist& bl) const
 {

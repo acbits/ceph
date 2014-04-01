@@ -2420,6 +2420,10 @@ struct SnapSet {
   map<snapid_t, interval_set<uint64_t> > clone_overlap;  // overlap w/ next newest
   map<snapid_t, uint64_t> clone_size;
 
+  void snaps_for_clone(
+    const pg_pool_t &info,
+    snapid_t clone, vector<snapid_t> *out /* ascending */) const;
+
   SnapSet() : seq(0), head_exists(false) {}
   SnapSet(bufferlist& bl) {
     bufferlist::iterator p = bl.begin();
