@@ -1009,6 +1009,8 @@ bool OSD::asok_command(string command, cmdmap_t& cmdmap, string format,
     f->dump_unsigned("num_pgs", pg_map.size());
     osd_lock.Unlock();
     f->close_section();
+  } else if (command == "flush_journal") {
+    store->sync_and_flush();
   } else if (command == "dump_ops_in_flight") {
     op_tracker.dump_ops_in_flight(f);
   } else if (command == "dump_historic_ops") {
@@ -1296,6 +1298,10 @@ void OSD::final_init()
   asok_hook = new OSDSocketHook(this);
   r = admin_socket->register_command("status", "status", asok_hook,
 				     "high-level status of OSD");
+  assert(r == 0);
+  r = admin_socket->register_command("flush_journal", "flush_journal",
+                                     asok_hook,
+                                     "flush the journal to permanent store");
   assert(r == 0);
   r = admin_socket->register_command("dump_ops_in_flight",
 				     "dump_ops_in_flight", asok_hook,
@@ -1590,6 +1596,7 @@ int OSD::shutdown()
 
   // unregister commands
   cct->get_admin_socket()->unregister_command("status");
+  cct->get_admin_socket()->unregister_command("flush_journal");
   cct->get_admin_socket()->unregister_command("dump_ops_in_flight");
   cct->get_admin_socket()->unregister_command("dump_historic_ops");
   cct->get_admin_socket()->unregister_command("dump_op_pq_state");
@@ -2108,8 +2115,6 @@ void OSD::load_pgs()
 
     service.init_splits_between(pg->info.pgid, pg->get_osdmap(), osdmap);
 
-    pg->reg_next_scrub();
-
     // generate state for PG's current mapping
     int primary, up_primary;
     vector<int> acting, up;
@@ -2122,6 +2127,8 @@ void OSD::load_pgs()
       primary);
     int role = OSDMap::calc_pg_role(whoami, pg->acting);
     pg->set_role(role);
+
+    pg->reg_next_scrub();
 
     PG::RecoveryCtx rctx(0, 0, 0, 0, 0, 0);
     pg->handle_loaded(&rctx);
@@ -4168,7 +4175,7 @@ COMMAND("reset_pg_recovery_stats", "reset pg recovery statistics",
 	"osd", "rw", "cli,rest")
 };
 
-void OSD::do_command(Connection *con, tid_t tid, vector<string>& cmd, bufferlist& data)
+void OSD::do_command(Connection *con, ceph_tid_t tid, vector<string>& cmd, bufferlist& data)
 {
   int r = 0;
   stringstream ss, ds;
@@ -6938,6 +6945,11 @@ void OSD::handle_pg_query(OpRequestRef op)
 
     dout(10) << " pg " << pgid << " dne" << dendl;
     pg_info_t empty(spg_t(pgid.pgid, it->second.to));
+    /* This is racy, but that should be ok: if we complete the deletion
+     * before the pg is recreated, we'll just start it off backfilling
+     * instead of just empty */
+    if (service.deleting_pgs.lookup(pgid))
+      empty.last_backfill = hobject_t();
     if (it->second.type == pg_query_t::LOG ||
 	it->second.type == pg_query_t::FULLLOG) {
       ConnectionRef con = service.get_con_osd_cluster(from, osdmap->get_epoch());
@@ -7530,13 +7542,11 @@ void OSD::OpWQ::_enqueue(pair<PGRef, OpRequestRef> item)
 
 void OSD::OpWQ::_enqueue_front(pair<PGRef, OpRequestRef> item)
 {
-  {
-    Mutex::Locker l(qlock);
-    if (pg_for_processing.count(&*(item.first))) {
-      pg_for_processing[&*(item.first)].push_front(item.second);
-      item.second = pg_for_processing[&*(item.first)].back();
-      pg_for_processing[&*(item.first)].pop_back();
-    }
+  Mutex::Locker l(qlock);
+  if (pg_for_processing.count(&*(item.first))) {
+    pg_for_processing[&*(item.first)].push_front(item.second);
+    item.second = pg_for_processing[&*(item.first)].back();
+    pg_for_processing[&*(item.first)].pop_back();
   }
   unsigned priority = item.second->get_req()->get_priority();
   unsigned cost = item.second->get_req()->get_cost();
@@ -7580,6 +7590,16 @@ void OSD::OpWQ::_process(PGRef pg, ThreadPool::TPHandle &handle)
     if (!(pg_for_processing[&*pg].size()))
       pg_for_processing.erase(&*pg);
   }
+
+  lgeneric_subdout(osd->cct, osd, 30) << "dequeue status: ";
+  Formatter *f = new_formatter("json");
+  f->open_object_section("q");
+  dump(f);
+  f->close_section();
+  f->flush(*_dout);
+  delete f;
+  *_dout << dendl;
+
   osd->dequeue_op(pg, op, handle);
   pg->unlock();
 }

@@ -174,14 +174,14 @@ public:
   const uint64_t min_stride_size;
   const uint64_t max_stride_size;
   AttrGenerator attr_gen;
-  const bool ec_pool;
+  const bool no_omap;
 	
   RadosTestContext(const string &pool_name, 
 		   int max_in_flight,
 		   uint64_t max_size,
 		   uint64_t min_stride_size,
 		   uint64_t max_stride_size,
-		   bool ec_pool,
+		   bool no_omap,
 		   const char *id = 0) :
     state_lock("Context Lock"),
     pool_obj_cont(),
@@ -195,7 +195,7 @@ public:
     max_size(max_size), 
     min_stride_size(min_stride_size), max_stride_size(max_stride_size),
     attr_gen(2000),
-    ec_pool(ec_pool)
+    no_omap(no_omap)
   {
   }
 
@@ -523,11 +523,11 @@ public:
 	  done = true;
 	  return;
 	}
-	if (!context->ec_pool) {
+	if (!context->no_omap) {
 	  op.omap_rm_keys(to_remove);
 	}
       } else {
-	if (!context->ec_pool) {
+	if (!context->no_omap) {
 	  op.omap_clear();
 	}
 	for (map<string, ContDesc>::iterator i = obj.attrs.begin();
@@ -544,8 +544,8 @@ public:
     pair<TestOp*, TestOp::CallbackInfo*> *cb_arg =
       new pair<TestOp*, TestOp::CallbackInfo*>(this,
 					       new TestOp::CallbackInfo(0));
-    comp = context->rados.aio_create_completion((void*) cb_arg, &write_callback,
-						NULL);
+    comp = context->rados.aio_create_completion((void*) cb_arg, NULL,
+						&write_callback);
     context->io_ctx.aio_operate(context->prefix+oid, comp, &op);
   }
 
@@ -621,7 +621,7 @@ public:
       omap_contents[key] = val_buffer;
       op.setxattr(key.c_str(), val_buffer);
     }
-    if (!context->ec_pool) {
+    if (!context->no_omap) {
       op.omap_set_header(header);
       op.omap_set(omap_contents);
     }
@@ -635,8 +635,8 @@ public:
     pair<TestOp*, TestOp::CallbackInfo*> *cb_arg =
       new pair<TestOp*, TestOp::CallbackInfo*>(this,
 					       new TestOp::CallbackInfo(0));
-    comp = context->rados.aio_create_completion((void*) cb_arg, &write_callback,
-						NULL);
+    comp = context->rados.aio_create_completion((void*) cb_arg, NULL,
+						&write_callback);
     context->io_ctx.aio_operate(context->prefix+oid, comp, &op);
   }
 
@@ -751,7 +751,8 @@ public:
 	new pair<TestOp*, TestOp::CallbackInfo*>(this,
 						 new TestOp::CallbackInfo(tid));
       librados::AioCompletion *completion =
-	context->rados.aio_create_completion((void*) cb_arg, &write_callback, NULL);
+	context->rados.aio_create_completion((void*) cb_arg, NULL,
+					     &write_callback);
       waiting.insert(completion);
       librados::ObjectWriteOperation op;
       if (do_append) {
@@ -771,7 +772,7 @@ public:
 	this,
 	new TestOp::CallbackInfo(++tid));
     librados::AioCompletion *completion = context->rados.aio_create_completion(
-      (void*) cb_arg, &write_callback, NULL);
+      (void*) cb_arg, NULL, &write_callback);
     waiting.insert(completion);
     waiting_on++;
     write_op.setxattr("_header", contbl);
@@ -786,7 +787,7 @@ public:
 	this,
 	new TestOp::CallbackInfo(++tid));
     rcompletion = context->rados.aio_create_completion(
-      (void*) cb_arg, &write_callback, NULL);
+         (void*) cb_arg, NULL, &write_callback);
     waiting_on++;
     read_op.read(0, 1, &rbuffer, 0);
     context->io_ctx.aio_operate(
@@ -998,7 +999,7 @@ public:
 	omap_requested_keys.insert(key);
       }
     }
-    if (!context->ec_pool) {
+    if (!context->no_omap) {
       op.omap_get_vals_by_keys(omap_requested_keys, &omap_returned_values, 0);
 
       op.omap_get_keys("", -1, &omap_keys, 0);
@@ -1059,7 +1060,7 @@ public:
       }
 
       // Attributes
-      if (!context->ec_pool) {
+      if (!context->no_omap) {
 	if (!(old_value.header == header)) {
 	  cerr << num << ": oid " << oid << " header does not match, old size: "
 	       << old_value.header.length() << " new size " << header.length()
@@ -1092,7 +1093,7 @@ public:
 	   ++iter) {
 	bufferlist bl = context->attr_gen.gen_bl(
 	  iter->second);
-	if (!context->ec_pool) {
+	if (!context->no_omap) {
 	  map<string, bufferlist>::iterator omap_iter = omap.find(iter->first);
 	  assert(omap_iter != omap.end());
 	  assert(bl.length() == omap_iter->second.length());
@@ -1113,7 +1114,7 @@ public:
 	  assert(*j == *k);
 	}
       }
-      if (!context->ec_pool) {
+      if (!context->no_omap) {
 	for (set<string>::iterator i = omap_requested_keys.begin();
 	     i != omap_requested_keys.end();
 	     ++i) {
@@ -1304,8 +1305,8 @@ public:
 	     const string &_oid,
 	     TestOpStat *stat = 0)
     : TestOp(n, context, stat),
-      oid(_oid),
-      roll_back_to(-1), done(false)
+      oid(_oid), roll_back_to(-1), 
+      done(false), comp(NULL)
   {}
 
   void _begin()
@@ -1345,8 +1346,8 @@ public:
     pair<TestOp*, TestOp::CallbackInfo*> *cb_arg =
       new pair<TestOp*, TestOp::CallbackInfo*>(this,
 					       new TestOp::CallbackInfo(0));
-    comp = context->rados.aio_create_completion((void*) cb_arg, &write_callback,
-						NULL);
+    comp = context->rados.aio_create_completion((void*) cb_arg, NULL,
+						&write_callback);
     context->io_ctx.aio_operate(context->prefix+oid, comp, &op);
   }
 
@@ -1397,7 +1398,8 @@ public:
 	     TestOpStat *stat)
     : TestOp(n, context, stat),
       oid(oid), oid_src(oid_src),
-      comp(NULL), done(0), version(0), r(0)
+      comp(NULL), snap(-1), done(0), 
+      version(0), r(0)
   {}
 
   void _begin()
@@ -1430,16 +1432,15 @@ public:
     pair<TestOp*, TestOp::CallbackInfo*> *cb_arg =
       new pair<TestOp*, TestOp::CallbackInfo*>(this,
 					       new TestOp::CallbackInfo(0));
-    comp = context->rados.aio_create_completion((void*) cb_arg, &write_callback,
-						NULL);
+    comp = context->rados.aio_create_completion((void*) cb_arg, NULL,
+						&write_callback);
     context->io_ctx.aio_operate(context->prefix+oid, comp, &op);
 
     // queue up a racing read, too.
     pair<TestOp*, TestOp::CallbackInfo*> *read_cb_arg =
       new pair<TestOp*, TestOp::CallbackInfo*>(this,
 					       new TestOp::CallbackInfo(1));
-    comp_racing_read = context->rados.aio_create_completion((void*) read_cb_arg, &write_callback,
-							    NULL);
+    comp_racing_read = context->rados.aio_create_completion((void*) read_cb_arg, NULL, &write_callback);
     rd_op.stat(NULL, NULL, NULL);
     context->io_ctx.aio_operate(context->prefix+oid, comp_racing_read, &rd_op,
 				librados::OPERATION_ORDER_READS_WRITES,  // order wrt previous write/update
@@ -1529,8 +1530,8 @@ public:
     pair<TestOp*, TestOp::CallbackInfo*> *cb_arg =
       new pair<TestOp*, TestOp::CallbackInfo*>(this,
 					       new TestOp::CallbackInfo(0));
-    comp1 = context->rados.aio_create_completion((void*) cb_arg, &write_callback,
-						 NULL);
+    comp1 = context->rados.aio_create_completion((void*) cb_arg, NULL,
+						 &write_callback);
     int r = context->io_ctx.hit_set_list(hash, comp1, &ls);
     assert(r == 0);
   }
@@ -1550,8 +1551,8 @@ public:
 	pair<TestOp*, TestOp::CallbackInfo*> *cb_arg =
 	  new pair<TestOp*, TestOp::CallbackInfo*>(this,
 						   new TestOp::CallbackInfo(0));
-	comp2 = context->rados.aio_create_completion((void*) cb_arg, &write_callback,
-						     NULL);
+	comp2 = context->rados.aio_create_completion((void*) cb_arg, NULL,
+						     &write_callback);
 	r = context->io_ctx.hit_set_get(hash, comp2, p->second, &bl);
 	assert(r == 0);
       }
@@ -1604,8 +1605,8 @@ public:
     pair<TestOp*, TestOp::CallbackInfo*> *cb_arg =
       new pair<TestOp*, TestOp::CallbackInfo*>(this,
 					       new TestOp::CallbackInfo(0));
-    completion = context->rados.aio_create_completion((void *) cb_arg,
-						      &write_callback, 0);
+    completion = context->rados.aio_create_completion((void *) cb_arg, NULL,
+						      &write_callback);
 
     context->oid_in_use.insert(oid);
     context->oid_not_in_use.erase(oid);
@@ -1678,8 +1679,8 @@ public:
     pair<TestOp*, TestOp::CallbackInfo*> *cb_arg =
       new pair<TestOp*, TestOp::CallbackInfo*>(this,
 					       new TestOp::CallbackInfo(0));
-    completion = context->rados.aio_create_completion((void *) cb_arg,
-						      &write_callback, 0);
+    completion = context->rados.aio_create_completion((void *) cb_arg, NULL,
+						      &write_callback);
 
     context->oid_in_use.insert(oid);
     context->oid_not_in_use.erase(oid);
@@ -1786,8 +1787,8 @@ public:
     pair<TestOp*, TestOp::CallbackInfo*> *cb_arg =
       new pair<TestOp*, TestOp::CallbackInfo*>(this,
 					       new TestOp::CallbackInfo(0));
-    completion = context->rados.aio_create_completion((void *) cb_arg,
-						      &write_callback, 0);
+    completion = context->rados.aio_create_completion((void *) cb_arg, NULL,
+						      &write_callback);
     // leave object in unused list so that we race with other operations
     //context->oid_in_use.insert(oid);
     //context->oid_not_in_use.erase(oid);
@@ -1885,8 +1886,8 @@ public:
     pair<TestOp*, TestOp::CallbackInfo*> *cb_arg =
       new pair<TestOp*, TestOp::CallbackInfo*>(this,
 					       new TestOp::CallbackInfo(0));
-    completion = context->rados.aio_create_completion((void *) cb_arg,
-						      &write_callback, 0);
+    completion = context->rados.aio_create_completion((void *) cb_arg, NULL,
+						      &write_callback);
     // leave object in unused list so that we race with other operations
     //context->oid_in_use.insert(oid);
     //context->oid_not_in_use.erase(oid);

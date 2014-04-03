@@ -74,7 +74,7 @@ public:
 		       header.tid);
   }
   int get_client_inc() { return client_inc; }
-  tid_t get_client_tid() { return header.tid; }
+  ceph_tid_t get_client_tid() { return header.tid; }
   
   object_t& get_oid() { return oid; }
 
@@ -366,6 +366,8 @@ struct ceph_osd_request_head {
     out << " " << pgid;
     if (is_retry_attempt())
       out << " RETRY=" << get_retry_attempt();
+    if (reassert_version != eversion_t())
+      out << " reassert_version=" << reassert_version;
     if (get_snap_seq())
       out << " snapc " << get_snap_seq() << "=" << snaps;
     out << " " << ceph_osd_flag_string(get_flags());

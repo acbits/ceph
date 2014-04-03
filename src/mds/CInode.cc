@@ -534,11 +534,12 @@ CDir *CInode::get_approx_dirfrag(frag_t fg)
     return ls.front();
 
   // try parents?
-  while (1) {
+  while (fg.bits() > 0) {
     fg = fg.parent();
     dir = get_dirfrag(fg);
     if (dir) return dir;
   }
+  return NULL;
 }	
 
 void CInode::get_dirfrags(list<CDir*>& ls) 
@@ -642,6 +643,16 @@ bool CInode::has_subtree_root_dirfrag(int auth)
   return false;
 }
 
+bool CInode::has_subtree_or_exporting_dirfrag()
+{
+  for (map<frag_t,CDir*>::iterator p = dirfrags.begin();
+       p != dirfrags.end();
+       ++p)
+    if (p->second->is_subtree_root() ||
+	p->second->state_test(CDir::STATE_EXPORTING))
+      return true;
+  return false;
+}
 
 void CInode::get_stickydirs()
 {
@@ -1197,7 +1208,8 @@ void CInode::encode_lock_state(int type, bufferlist& bl)
     if (is_auth()) {
       ::encode(inode.version, bl);
     } else {
-      bool dirty = dirfragtreelock.is_dirty();
+      // treat flushing as dirty when rejoining cache
+      bool dirty = dirfragtreelock.is_dirty_or_flushing();
       ::encode(dirty, bl);
     }
     {
@@ -1227,9 +1239,12 @@ void CInode::encode_lock_state(int type, bufferlist& bl)
 	::encode(inode.layout, bl);
 	::encode(inode.size, bl);
 	::encode(inode.client_ranges, bl);
+	::encode(inode.inline_data, bl);
+	::encode(inode.inline_version, bl);
       }
     } else {
-      bool dirty = filelock.is_dirty();
+      // treat flushing as dirty when rejoining cache
+      bool dirty = filelock.is_dirty_or_flushing();
       ::encode(dirty, bl);
     }
 
@@ -1264,7 +1279,8 @@ void CInode::encode_lock_state(int type, bufferlist& bl)
     if (is_auth()) {
       ::encode(inode.version, bl);
     } else {
-      bool dirty = nestlock.is_dirty();
+      // treat flushing as dirty when rejoining cache
+      bool dirty = nestlock.is_dirty_or_flushing();
       ::encode(dirty, bl);
     }
     {
@@ -1424,6 +1440,8 @@ void CInode::decode_lock_state(int type, bufferlist& bl)
 	::decode(inode.layout, p);
 	::decode(inode.size, p);
 	::decode(inode.client_ranges, p);
+	::decode(inode.inline_data, p);
+	::decode(inode.inline_version, p);
       }
     } else {
       bool replica_dirty;
@@ -2880,11 +2898,13 @@ int CInode::encode_inodestat(bufferlist& bl, Session *session,
   // inline data
   version_t inline_version = 0;
   bufferlist inline_data;
-  if (!cap || (cap->client_inline_version < i->inline_version)) {
+  if (i->inline_version == CEPH_INLINE_NONE) {
+    inline_version = CEPH_INLINE_NONE;
+  } else if ((!cap && !no_caps) ||
+	     (cap && cap->client_inline_version < i->inline_version) ||
+	     (getattr_caps & CEPH_CAP_FILE_RD)) { // client requests inline data
     inline_version = i->inline_version;
     inline_data = i->inline_data;
-    if (cap)
-      cap->client_inline_version = i->inline_version;
   }
 
   // nest (do same as file... :/)
@@ -2995,6 +3015,17 @@ int CInode::encode_inodestat(bufferlist& bl, Session *session,
 	   << " xattrv " << e.xattr_version << " len " << xbl.length()
 	   << dendl;
 
+  if (inline_data.length() && cap) {
+    if ((cap->pending() | getattr_caps) & CEPH_CAP_FILE_SHARED) {
+      dout(10) << "including inline version " << inline_version << dendl;
+      cap->client_inline_version = inline_version;
+    } else {
+      dout(10) << "dropping inline version " << inline_version << dendl;
+      inline_version = 0;
+      inline_data.clear();
+    }
+  }
+
   // include those xattrs?
   if (xbl.length() && cap) {
     if ((cap->pending() | getattr_caps) & CEPH_CAP_XATTR_SHARED) {
@@ -3031,10 +3062,11 @@ int CInode::encode_inodestat(bufferlist& bl, Session *session,
 
 void CInode::encode_cap_message(MClientCaps *m, Capability *cap)
 {
+  assert(cap);
+
   client_t client = cap->get_client();
 
-  bool pfile = filelock.is_xlocked_by_client(client) ||
-    (cap && (cap->issued() & CEPH_CAP_FILE_EXCL));
+  bool pfile = filelock.is_xlocked_by_client(client) || (cap->issued() & CEPH_CAP_FILE_EXCL);
   bool pauth = authlock.is_xlocked_by_client(client);
   bool plink = linklock.is_xlocked_by_client(client);
   bool pxattr = xattrlock.is_xlocked_by_client(client);
@@ -3208,7 +3240,7 @@ void CInode::_decode_locks_rejoin(bufferlist::iterator& p, list<Context*>& waite
 
 void CInode::encode_export(bufferlist& bl)
 {
-  ENCODE_START(4, 4, bl)
+  ENCODE_START(5, 4, bl)
   _encode_base(bl);
 
   ::encode(state, bl);
@@ -3236,8 +3268,12 @@ void CInode::encode_export(bufferlist& bl)
   ::encode(bounding, bl);
 
   _encode_locks_full(bl);
-  get(PIN_TEMPEXPORTING);
+
+  ::encode(fcntl_locks, bl);
+  ::encode(flock_locks, bl);
   ENCODE_FINISH(bl);
+
+  get(PIN_TEMPEXPORTING);
 }
 
 void CInode::finish_export(utime_t now)
@@ -3257,7 +3293,7 @@ void CInode::finish_export(utime_t now)
 void CInode::decode_import(bufferlist::iterator& p,
 			   LogSegment *ls)
 {
-  DECODE_START_LEGACY_COMPAT_LEN(4, 4, 4, p);
+  DECODE_START(5, p);
 
   _decode_base(p);
 
@@ -3279,52 +3315,56 @@ void CInode::decode_import(bufferlist::iterator& p,
   if (!replica_map.empty())
     get(PIN_REPLICATED);
 
-  if (struct_v >= 2) {
-    // decode fragstat info on bounding cdirs
-    bufferlist bounding;
-    ::decode(bounding, p);
-    bufferlist::iterator q = bounding.begin();
-    while (!q.end()) {
-      frag_t fg;
-      ::decode(fg, q);
-      CDir *dir = get_dirfrag(fg);
-      assert(dir);  // we should have all bounds open
+  // decode fragstat info on bounding cdirs
+  bufferlist bounding;
+  ::decode(bounding, p);
+  bufferlist::iterator q = bounding.begin();
+  while (!q.end()) {
+    frag_t fg;
+    ::decode(fg, q);
+    CDir *dir = get_dirfrag(fg);
+    assert(dir);  // we should have all bounds open
 
-      // Only take the remote's fragstat/rstat if we are non-auth for
-      // this dirfrag AND the lock is NOT in a scattered (MIX) state.
-      // We know lock is stable, and MIX is the only state in which
-      // the inode auth (who sent us this data) may not have the best
-      // info.
+    // Only take the remote's fragstat/rstat if we are non-auth for
+    // this dirfrag AND the lock is NOT in a scattered (MIX) state.
+    // We know lock is stable, and MIX is the only state in which
+    // the inode auth (who sent us this data) may not have the best
+    // info.
 
-      // HMM: Are there cases where dir->is_auth() is an insufficient
-      // check because the dirfrag is under migration?  That implies
-      // it is frozen (and in a SYNC or LOCK state).  FIXME.
+    // HMM: Are there cases where dir->is_auth() is an insufficient
+    // check because the dirfrag is under migration?  That implies
+    // it is frozen (and in a SYNC or LOCK state).  FIXME.
 
-      if (dir->is_auth() ||
-	  filelock.get_state() == LOCK_MIX) {
-	dout(10) << " skipped fragstat info for " << *dir << dendl;
-	frag_info_t f;
-	::decode(f, q);
-	::decode(f, q);
-      } else {
-	::decode(dir->fnode.fragstat, q);
-	::decode(dir->fnode.accounted_fragstat, q);
-	dout(10) << " took fragstat info for " << *dir << dendl;
-      }
-      if (dir->is_auth() ||
-	  nestlock.get_state() == LOCK_MIX) {
-	dout(10) << " skipped rstat info for " << *dir << dendl;
-	nest_info_t n;
-	::decode(n, q);
-	::decode(n, q);
-      } else {
-	::decode(dir->fnode.rstat, q);
-	::decode(dir->fnode.accounted_rstat, q);
-	dout(10) << " took rstat info for " << *dir << dendl;
-      }
+    if (dir->is_auth() ||
+        filelock.get_state() == LOCK_MIX) {
+      dout(10) << " skipped fragstat info for " << *dir << dendl;
+      frag_info_t f;
+      ::decode(f, q);
+      ::decode(f, q);
+    } else {
+      ::decode(dir->fnode.fragstat, q);
+      ::decode(dir->fnode.accounted_fragstat, q);
+      dout(10) << " took fragstat info for " << *dir << dendl;
+    }
+    if (dir->is_auth() ||
+        nestlock.get_state() == LOCK_MIX) {
+      dout(10) << " skipped rstat info for " << *dir << dendl;
+      nest_info_t n;
+      ::decode(n, q);
+      ::decode(n, q);
+    } else {
+      ::decode(dir->fnode.rstat, q);
+      ::decode(dir->fnode.accounted_rstat, q);
+      dout(10) << " took rstat info for " << *dir << dendl;
     }
   }
 
   _decode_locks_full(p);
+
+  if (struct_v >= 5) {
+    ::decode(fcntl_locks, p);
+    ::decode(flock_locks, p);
+  }
+
   DECODE_FINISH(p);
 }

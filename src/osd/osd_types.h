@@ -4,6 +4,9 @@
  * Ceph - scalable distributed file system
  *
  * Copyright (C) 2004-2006 Sage Weil <sage@newdream.net>
+ * Copyright (C) 2013,2014 Cloudwatt <libre.licensing@cloudwatt.com>
+ *
+ * Author: Loic Dachary <loic@dachary.org>
  *
  * This is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -875,7 +878,8 @@ private:
 
 
 public:
-  map<string,string> properties;  ///< interpreted according to the pool type
+  map<string,string> properties;  ///< OBSOLETE
+  string erasure_code_profile; ///< name of the erasure code profile in OSDMap
   epoch_t last_change;      ///< most recent epoch changed, exclusing snapshot changes
   snapid_t snap_seq;        ///< seq for per-pool snapshot
   epoch_t snap_epoch;       ///< osdmap epoch of last snap
@@ -943,8 +947,8 @@ public:
       tier_of(-1), read_tier(-1), write_tier(-1),
       cache_mode(CACHEMODE_NONE),
       target_max_bytes(0), target_max_objects(0),
-      cache_target_dirty_ratio_micro(400000),
-      cache_target_full_ratio_micro(800000),
+      cache_target_dirty_ratio_micro(0),
+      cache_target_full_ratio_micro(0),
       cache_min_flush_age(0),
       cache_min_evict_age(0),
       hit_set_params(),
@@ -1120,6 +1124,7 @@ struct object_stat_sum_t {
   int64_t num_keys_recovered;
   int64_t num_objects_dirty;
   int64_t num_whiteouts;
+  int64_t num_objects_omap;
 
   object_stat_sum_t()
     : num_bytes(0),
@@ -1132,7 +1137,8 @@ struct object_stat_sum_t {
       num_bytes_recovered(0),
       num_keys_recovered(0),
       num_objects_dirty(0),
-      num_whiteouts(0)
+      num_whiteouts(0),
+      num_objects_omap(0)
   {}
 
   void floor(int64_t f) {
@@ -1286,6 +1292,7 @@ struct pg_stat_t {
   /// true if num_objects_dirty is not accurate (because it was not
   /// maintained starting from pool creation)
   bool dirty_stats_invalid;
+  bool omap_stats_invalid;
 
   /// up, acting primaries
   int up_primary;
@@ -1301,6 +1308,7 @@ struct pg_stat_t {
       log_size(0), ondisk_log_size(0),
       mapping_epoch(0),
       dirty_stats_invalid(false),
+      omap_stats_invalid(false),
       up_primary(-1),
       acting_primary(-1)
   { }
@@ -1592,9 +1600,9 @@ inline ostream& operator<<(ostream& out, const pg_info_t& pgi)
     if (pgi.last_complete != pgi.last_update)
       out << " lc " << pgi.last_complete;
     out << " (" << pgi.log_tail << "," << pgi.last_update << "]";
-    if (pgi.is_incomplete())
-      out << " lb " << pgi.last_backfill;
   }
+  if (pgi.is_incomplete())
+    out << " lb " << pgi.last_backfill;
   //out << " c " << pgi.epoch_created;
   out << " local-les=" << pgi.last_epoch_started;
   out << " n=" << pgi.stats.stats.sum.num_objects;
@@ -2416,6 +2424,10 @@ struct SnapSet {
   map<snapid_t, interval_set<uint64_t> > clone_overlap;  // overlap w/ next newest
   map<snapid_t, uint64_t> clone_size;
 
+  void snaps_for_clone(
+    const pg_pool_t &info,
+    snapid_t clone, vector<snapid_t> *out /* ascending */) const;
+
   SnapSet() : seq(0), head_exists(false) {}
   SnapSet(bufferlist& bl) {
     bufferlist::iterator p = bl.begin();
@@ -2445,7 +2457,7 @@ struct watch_info_t {
   entity_addr_t addr;
 
   watch_info_t() : cookie(0), timeout_seconds(0) { }
-  watch_info_t(uint64_t c, uint32_t t, entity_addr_t a) : cookie(c), timeout_seconds(t), addr(a) {}
+  watch_info_t(uint64_t c, uint32_t t, const entity_addr_t& a) : cookie(c), timeout_seconds(t), addr(a) {}
 
   void encode(bufferlist& bl) const;
   void decode(bufferlist::iterator& bl);
@@ -2549,6 +2561,9 @@ struct object_info_t {
   bool is_dirty() const {
     return test_flag(FLAG_DIRTY);
   }
+  bool is_omap() const {
+    return test_flag(FLAG_OMAP);
+  }
 
   void encode(bufferlist& bl) const;
   void decode(bufferlist::iterator& bl);
@@ -2591,8 +2606,10 @@ struct SnapSetContext {
   int ref;
   bool registered;
   SnapSet snapset;
+  bool exists;
 
-  SnapSetContext(const hobject_t& o) : oid(o), ref(0), registered(false) { }
+  SnapSetContext(const hobject_t& o) :
+    oid(o), ref(0), registered(false), exists(true) { }
 };
 
 
@@ -3085,7 +3102,7 @@ struct watch_item_t {
 
   watch_item_t() : cookie(0), timeout_seconds(0) { }
   watch_item_t(entity_name_t name, uint64_t cookie, uint32_t timeout,
-     entity_addr_t addr)
+     const entity_addr_t& addr)
     : name(name), cookie(cookie), timeout_seconds(timeout),
     addr(addr) { }
 

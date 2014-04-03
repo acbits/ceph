@@ -93,14 +93,16 @@ void usage(ostream& out)
 "   load-gen [options]               generate load on the cluster\n"
 "   listomapkeys <obj-name>          list the keys in the object map\n"
 "   listomapvals <obj-name>          list the keys and vals in the object map \n"
-"   getomapval <obj-name> <key>      show the value for the specified key\n"
+"   getomapval <obj-name> <key> [file] show the value for the specified key\n"
 "                                    in the object's object map\n"
 "   setomapval <obj-name> <key> <val>\n"
 "   rmomapkey <obj-name> <key>\n"
-"   getomapheader <obj-name>\n"
+"   getomapheader <obj-name> [file]\n"
 "   setomapheader <obj-name> <val>\n"
 "   tmap-to-omap <obj-name>          convert tmap keys/values to omap\n"
 "   listwatchers <obj-name>          list the watchers of this object\n"
+"   set-alloc-hint <obj-name> <expected-object-size> <expected-write-size>\n"
+"                                    set allocation hint for an object\n"
 "\n"
 "IMPORT AND EXPORT\n"
 "   import [options] <local-directory> <rados-pool>\n"
@@ -153,8 +155,6 @@ void usage(ostream& out)
 "   --snap name\n"
 "        select given snap name for (read) IO\n"
 "   -i infile\n"
-"   -o outfile\n"
-"        specify input or output file (for certain commands)\n"
 "   --create\n"
 "        create the pool or directory that was specified\n"
 "   -N namespace\n"
@@ -186,6 +186,31 @@ static void usage_exit()
   usage(cerr);
   exit(1);
 }
+
+
+static int dump_data(std::string const &filename, bufferlist const &data)
+{
+  int fd;
+  if (filename == "-") {
+    fd = 1;
+  } else {
+    fd = TEMP_FAILURE_RETRY(::open(filename.c_str(), O_WRONLY|O_CREAT|O_TRUNC, 0644));
+    if (fd < 0) {
+      int err = errno;
+      cerr << "failed to open file: " << cpp_strerror(err) << std::endl;
+      return -err;
+    }
+  }
+
+  int r = data.write_fd(fd);
+
+  if (fd != 1) {
+    VOID_TEMP_FAILURE_RETRY(::close(fd));
+  }
+
+  return r;
+}
+
 
 static int do_get(IoCtx& io_ctx, const char *objname, const char *outfile, unsigned op_size)
 {
@@ -224,7 +249,7 @@ static int do_get(IoCtx& io_ctx, const char *objname, const char *outfile, unsig
 
  out:
   if (fd != 1)
-    TEMP_FAILURE_RETRY(::close(fd));
+    VOID_TEMP_FAILURE_RETRY(::close(fd));
   return ret;
 }
 
@@ -426,7 +451,7 @@ static int do_put(IoCtx& io_ctx, const char *objname, const char *infile, int op
   }
   ret = 0;
  out:
-  TEMP_FAILURE_RETRY(close(fd));
+  VOID_TEMP_FAILURE_RETRY(close(fd));
   delete[] buf;
   return ret;
 }
@@ -845,7 +870,7 @@ protected:
     return io_ctx.read(oid, bl, len, 0);
   }
   int sync_write(const std::string& oid, bufferlist& bl, size_t len) {
-    return io_ctx.write(oid, bl, len, 0);
+    return io_ctx.write_full(oid, bl);
   }
 
   int sync_remove(const std::string& oid) {
@@ -1667,6 +1692,10 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
       usage_exit();
 
     string oid(nargs[1]);
+    string outfile;
+    if (nargs.size() >= 3) {
+      outfile = nargs[2];
+    }
 
     bufferlist header;
     ret = io_ctx.omap_get_header(oid, &header);
@@ -1675,9 +1704,14 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
 	   << ": " << cpp_strerror(ret) << std::endl;
       goto out;
     } else {
-      cout << "header (" << header.length() << " bytes) :\n";
-      header.hexdump(cout);
-      cout << std::endl;
+      if (!outfile.empty()) {
+	cerr << "Writing to " << outfile << std::endl;
+	dump_data(outfile, header);
+      } else {
+	cout << "header (" << header.length() << " bytes) :\n";
+	header.hexdump(cout);
+	cout << std::endl;
+      }
       ret = 0;
     }
   } else if (strcmp(nargs[0], "setomapheader") == 0) {
@@ -1728,6 +1762,11 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
     set<string> keys;
     keys.insert(key);
 
+    std::string outfile;
+    if (nargs.size() >= 4) {
+      outfile = nargs[3];
+    }
+
     map<string, bufferlist> values;
     ret = io_ctx.omap_get_vals_by_keys(oid, keys, &values);
     if (ret < 0) {
@@ -1740,8 +1779,14 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
 
     if (values.size() && values.begin()->first == key) {
       cout << " (length " << values.begin()->second.length() << ") : ";
-      values.begin()->second.hexdump(cout);
-      cout << std::endl;
+      if (!outfile.empty()) {
+	cerr << "Writing to " << outfile << std::endl;
+	dump_data(outfile, values.begin()->second);
+      } else {
+	values.begin()->second.hexdump(cout);
+	cout << std::endl;
+      }
+      ret = 0;
     } else {
       cout << "No such key: " << pool_name << "/" << oid << "/" << key
 	   << std::endl;
@@ -2197,6 +2242,27 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
     ret = io_ctx.notify(oid, 0, bl);
     if (ret != 0)
       cerr << "error calling notify: " << ret << std::endl;
+  } else if (strcmp(nargs[0], "set-alloc-hint") == 0) {
+    if (!pool_name || nargs.size() < 4)
+      usage_exit();
+    string err;
+    string oid(nargs[1]);
+    uint64_t expected_object_size = strict_strtoll(nargs[2], 10, &err);
+    if (!err.empty()) {
+      cerr << "couldn't parse expected_object_size: " << err << std::endl;
+      usage_exit();
+    }
+    uint64_t expected_write_size = strict_strtoll(nargs[3], 10, &err);
+    if (!err.empty()) {
+      cerr << "couldn't parse expected_write_size: " << err << std::endl;
+      usage_exit();
+    }
+    ret = io_ctx.set_alloc_hint(oid, expected_object_size, expected_write_size);
+    if (ret < 0) {
+      cerr << "error setting alloc-hint " << pool_name << "/" << oid << ": "
+           << strerror_r(-ret, buf, sizeof(buf)) << std::endl;
+      goto out;
+    }
   } else if (strcmp(nargs[0], "load-gen") == 0) {
     if (!pool_name) {
       cerr << "error: must specify pool" << std::endl;

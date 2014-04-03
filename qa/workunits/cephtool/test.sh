@@ -285,6 +285,7 @@ for ((i=0; i < 100; i++)); do
 done
 
 ceph osd thrash 10
+ceph osd down `seq 0 31`  # force everything down so that we can trust up
 # make sure everything gets back up+in.
 for ((i=0; i < 100; i++)); do
 	if ceph osd dump | grep ' down '; then
@@ -423,6 +424,14 @@ ceph osd primary-affinity osd.0 .9
 expect_false ceph osd primary-affinity osd.0 -2
 ceph osd primary-affinity osd.0 1
 
+ceph osd pg-temp 0.0 0 1 2
+ceph osd pg-temp 0.0 1 0 2
+expect_false ceph osd pg-temp asdf qwer
+expect_false ceph osd pg-temp 0.0 asdf
+expect_false ceph osd pg-temp 0.0
+
+# don't test ceph osd primary-temp for now
+
 for s in pg_num pgp_num size min_size crash_replay_interval crush_ruleset; do
 	ceph osd pool get data $s
 done
@@ -433,8 +442,7 @@ ceph osd pool set data size $new_size
 ceph osd pool get data size | grep "size: $new_size"
 ceph osd pool set data size $old_size
 
-ceph osd crush rule create-erasure ec_ruleset
-ceph osd pool create pool_erasure 12 12 erasure crush_ruleset=ec_ruleset
+ceph osd pool create pool_erasure 12 12 erasure
 set +e
 ceph osd pool set pool_erasure size 4444 2>$TMPFILE
 check_response 'not change the size'
@@ -448,12 +456,18 @@ expect_false ceph osd pool set data hashpspool asdf
 expect_false ceph osd pool set data hashpspool 2
 
 ceph osd pool set rbd hit_set_type explicit_hash
+ceph osd pool get rbd hit_set_type | grep "hit_set_type: explicit_hash"
 ceph osd pool set rbd hit_set_type explicit_object
+ceph osd pool get rbd hit_set_type | grep "hit_set_type: explicit_object"
 ceph osd pool set rbd hit_set_type bloom
+ceph osd pool get rbd hit_set_type | grep "hit_set_type: bloom"
 expect_false ceph osd pool set rbd hit_set_type i_dont_exist
 ceph osd pool set rbd hit_set_period 123
+ceph osd pool get rbd hit_set_period | grep "hit_set_period: 123"
 ceph osd pool set rbd hit_set_count 12
+ceph osd pool get rbd hit_set_count | grep "hit_set_count: 12"
 ceph osd pool set rbd hit_set_fpp .01
+ceph osd pool get rbd hit_set_fpp | grep "hit_set_fpp: 0.01"
 
 ceph osd pool set rbd target_max_objects 123
 ceph osd pool set rbd target_max_bytes 123456
@@ -469,6 +483,13 @@ ceph osd pool set rbd cache_min_evict_age 234
 
 ceph osd pool get rbd crush_ruleset | grep 'crush_ruleset: 0'
 
+
+ceph osd erasure-code-profile set fooprofile a=b c=d
+ceph osd erasure-code-profile set fooprofile a=b c=d
+expect_false ceph osd erasure-code-profile set fooprofile a=b c=d e=f
+ceph osd erasure-code-profile set fooprofile a=b c=d e=f --force
+ceph osd erasure-code-profile set fooprofile a=b c=d e=f
+expect_false ceph osd erasure-code-profile set fooprofile a=b c=d e=f g=h
 
 
 set +e
